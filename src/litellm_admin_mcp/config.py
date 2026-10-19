@@ -7,7 +7,7 @@ from urllib.parse import urlsplit
 from .catalog import BY_NAME
 
 
-def gateway_origin(value: str) -> str:
+def gateway_origin(value: str, allow_http: bool = False) -> str:
     value = value.rstrip("/").removesuffix("/v1")
     parsed = urlsplit(value)
     loopback = parsed.hostname == "localhost"
@@ -17,8 +17,8 @@ def gateway_origin(value: str) -> str:
         pass
     if (not parsed.hostname or parsed.username or parsed.password or parsed.path
             or parsed.query or parsed.fragment or any(c.isspace() for c in value)
-            or not (parsed.scheme == "https" or parsed.scheme == "http" and loopback)):
-        raise ValueError("LITELLM_BASE_URL must be an HTTPS gateway origin (optionally /v1); HTTP is allowed only on loopback.")
+            or not (parsed.scheme == "https" or parsed.scheme == "http" and (loopback or allow_http))):
+        raise ValueError("LITELLM_BASE_URL must be an HTTPS gateway origin (optionally /v1); HTTP is allowed only on loopback or with LITELLM_ALLOW_HTTP.")
     try:
         parsed.port
     except ValueError:
@@ -42,9 +42,11 @@ class Config:
     public_url: str = ""
     response_view: str = "compact"
     schema_mode: str = "full"
+    # Fork: plain-HTTP gateway on a trusted LAN (e.g. http://litellm:4000).
+    allow_http: bool = False
 
     def __post_init__(self):
-        object.__setattr__(self, "base_url", gateway_origin(self.base_url))
+        object.__setattr__(self, "base_url", gateway_origin(self.base_url, self.allow_http))
         if self.response_view not in {"full", "compact"}:
             raise ValueError("LITELLM_ADMIN_RESPONSE_VIEW must be full or compact")
         if self.schema_mode not in {"full", "discovery"}:
@@ -66,4 +68,5 @@ class Config:
             public_url=os.getenv("LITELLM_MCP_PUBLIC_URL", "").rstrip("/"),
             response_view=os.getenv("LITELLM_ADMIN_RESPONSE_VIEW", "compact").strip(),
             schema_mode=os.getenv("LITELLM_ADMIN_SCHEMA_MODE", "full").strip(),
+            allow_http=env_bool("LITELLM_ALLOW_HTTP"),
         )

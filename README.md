@@ -303,3 +303,9 @@ reasoning quality.
 
 MIT. See [LICENSE](LICENSE). The initial tool inventory and authorization behavior
 were extracted from Berri AI's LiteLLM Admin Agent.
+
+## Fork (Tomvis/liteadmin-mcp `enhanced`)
+
+- `LITELLM_ALLOW_HTTP=true` accepts a plain-HTTP gateway origin on a trusted LAN (e.g. `http://litellm:4000`). `LITELLM_MCP_PUBLIC_URL` stays HTTPS.
+- A drifted operationId or unsupported schema drops that one tool (logged as a warning) instead of failing every tool.
+- Gateway requests send a desktop Chrome User-Agent.

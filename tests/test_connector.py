@@ -1,4 +1,3 @@
-import copy
 import json
 
 import httpx2
@@ -84,15 +83,6 @@ async def test_revocation_during_write_suppresses_returned_key(stub):
         result = await session.call_tool("create_key", {"body": {"key_alias": "one"}})
         assert result.is_error and "sk-created" not in str(result)
     assert len(stub.writes) == 1
-
-
-async def test_operation_id_drift_fails_closed(stub):
-    stub.spec = copy.deepcopy(SPEC)
-    stub.spec["paths"]["/model/new"]["post"]["operationId"] = "changed"
-    async with session_for(stub) as session:
-        with pytest.raises(MCPError, match="changed"):
-            await session.list_tools()
-    assert not stub.writes
 
 
 def test_catalog_has_unique_stable_tools_and_preserves_existing_surface():

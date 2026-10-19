@@ -1,6 +1,7 @@
 """Authenticated, non-retrying calls to a fixed LiteLLM management API."""
 import asyncio
 import json
+import logging
 import re
 import time
 from typing import Any
@@ -16,6 +17,10 @@ from .schema import SchemaError, discovery_schema, tool_schema
 from .results import (MAX_RESULT_BYTES, PAGE_BYTES, READ_SCHEMA, RESPONSE_SCHEMA,
                       ResultError, ResultStore, encode, page, select)
 
+log = logging.getLogger(__name__)
+# Fork: a current desktop Chrome UA instead of httpx's default.
+USER_AGENT = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+              "(KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36")
 
 DESCRIBE_SCHEMA = {
     "type": "object", "additionalProperties": False, "required": ["name"],
@@ -83,7 +88,8 @@ class Gateway:
 
     async def __aenter__(self):
         if self.client is None:
-            self.client = httpx2.AsyncClient(timeout=httpx2.Timeout(30, read=120), follow_redirects=False)
+            self.client = httpx2.AsyncClient(timeout=httpx2.Timeout(30, read=120), follow_redirects=False,
+                                             headers={"User-Agent": USER_AGENT})
         return self
 
     async def __aexit__(self, *args):
@@ -161,14 +167,17 @@ class Gateway:
                 operation = path.get(item.method.lower())
                 if not operation:
                     continue
+                # Fork: drop one drifted/unsupported operation instead of failing every tool.
                 if operation.get("operationId") != item.operation_id:
-                    raise AdminError(f"Gateway operation changed for {item.name}; update the connector before using it.", 503)
+                    log.warning("Skipping %s: gateway operationId changed to %r", item.name, operation.get("operationId"))
+                    continue
                 try:
                     schema = tool_schema(spec, path, operation)
                     schema["properties"]["response"] = RESPONSE_SCHEMA
                     jsonschema.Draft202012Validator.check_schema(schema)
                 except (SchemaError, jsonschema.SchemaError, TypeError, KeyError):
-                    raise AdminError(f"Gateway schema is unsupported for {item.name}.", 503) from None
+                    log.warning("Skipping %s: gateway schema is unsupported", item.name)
+                    continue
                 selected[item.name] = types.Tool(
                     name=item.name, description=f"{item.summary}. {item.method} {item.path}. "
                     + ("Read-only." if item.read_only else "Changes gateway state; execute only when requested. Never retry an uncertain write."),
