@@ -7,7 +7,7 @@ import pytest
 
 from conftest import SPEC, session_for
 from litellm_admin_mcp.config import Config
-from litellm_admin_mcp.gateway import Gateway, USER_AGENT
+from litellm_admin_mcp.gateway import AdminError, Gateway, USER_AGENT
 
 
 def test_plain_http_gateway_needs_opt_in():
@@ -57,3 +57,41 @@ async def test_requests_send_browser_user_agent(stub):
         await gateway.call("list_keys", {}, "alice-admin")
     assert seen and set(seen) == {USER_AGENT}
     assert "Chrome/" in USER_AGENT
+
+
+def _strip_permissions(stub):
+    original = stub.handle
+    def handle(request):
+        response = original(request)
+        if request.url.path == "/user/info":
+            body = response.json()
+            body.pop("admin_mcp_permissions", None)
+            return httpx2.Response(response.status_code, json=body)
+        return response
+    stub.handle = handle
+
+
+def test_legacy_gateway_env(monkeypatch):
+    monkeypatch.setenv("LITELLM_BASE_URL", "https://gateway.example.com")
+    assert not Config.read().legacy_gateway
+    monkeypatch.setenv("LITELLM_ADMIN_LEGACY_GATEWAY", "true")
+    assert Config.read().legacy_gateway
+
+
+async def test_legacy_gateway_opt_in_allows_proxy_admin(stub):
+    _strip_permissions(stub)
+    gateway = Gateway(Config("https://gateway.example.com", legacy_gateway=True))
+    async with gateway:
+        gateway.client._transport = httpx2.MockTransport(stub.handle)
+        assert "list_keys" in await gateway.tools("alice-admin")
+        await gateway.call("list_keys", {}, "alice-admin")
+        with pytest.raises(AdminError, match="proxy admins"):
+            await gateway.tools("internal-user")
+
+
+async def test_legacy_gateway_opt_in_still_enforces_new_gateway(stub):
+    stub.denied_tools = {"list_keys"}
+    gateway = Gateway(Config("https://gateway.example.com", legacy_gateway=True))
+    async with gateway:
+        gateway.client._transport = httpx2.MockTransport(stub.handle)
+        assert "list_keys" not in await gateway.tools("alice-admin")

@@ -43,7 +43,7 @@ class AdminError(Exception):
 @dataclass(frozen=True)
 class Authorization:
     principal: str
-    tools: frozenset[str]
+    tools: frozenset[str] | None  # Fork: None = legacy gateway, no per-tool filter
 
 
 def valid_credential(value: str) -> str:
@@ -152,6 +152,8 @@ class Gateway:
                 or user.get("deleted") or user.get("is_active") is False):
             raise AdminError("Only current LiteLLM proxy admins may use these tools.", 403)
         permissions = data.get("admin_mcp_permissions")
+        if permissions is None and self.config.legacy_gateway:
+            return Authorization(user["user_id"], None)
         if (not isinstance(permissions, dict) or not isinstance(permissions.get("tools"), list)
                 or any(not isinstance(name, str) for name in permissions["tools"])):
             raise AdminError("Gateway cannot verify this credential's admin permissions; upgrade LiteLLM.", 403)
@@ -164,7 +166,7 @@ class Gateway:
         canonical = await self._load_tools(credential)
         visible = {}
         for name, tool in canonical.items():
-            if name not in authorization.tools:
+            if authorization.tools is not None and name not in authorization.tools:
                 continue
             visible[name] = (tool.model_copy(update={"input_schema": discovery_schema(tool.input_schema, name),
                 "description": tool.description + " Call describe_admin_tool for the complete argument schema before use."})
@@ -225,7 +227,7 @@ class Gateway:
         available = await self._load_tools(credential)
         if name not in available and name not in HELPERS:
             raise AdminError("This tool is not enabled for this connector.", 403)
-        if name not in authorization.tools and name not in HELPERS:
+        if authorization.tools is not None and name not in authorization.tools and name not in HELPERS:
             raise AdminError("This credential is not allowed to use this admin tool.", 403)
         try:
             schema = HELPERS[name][0] if name in HELPERS else available[name].input_schema

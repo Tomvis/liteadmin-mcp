@@ -44,6 +44,9 @@ class Config:
     schema_mode: str = "full"
     # Fork: plain-HTTP gateway on a trusted LAN (e.g. http://litellm:4000).
     allow_http: bool = False
+    # Fork: accept a proxy_admin on a gateway that predates admin_mcp_permissions
+    # (LiteLLM without BerriAI/litellm#48080); every tool stays visible.
+    legacy_gateway: bool = False
 
     def __post_init__(self):
         object.__setattr__(self, "base_url", gateway_origin(self.base_url, self.allow_http))
@@ -69,4 +72,5 @@ class Config:
             response_view=os.getenv("LITELLM_ADMIN_RESPONSE_VIEW", "compact").strip(),
             schema_mode=os.getenv("LITELLM_ADMIN_SCHEMA_MODE", "full").strip(),
             allow_http=env_bool("LITELLM_ALLOW_HTTP"),
+            legacy_gateway=env_bool("LITELLM_ADMIN_LEGACY_GATEWAY"),
         )

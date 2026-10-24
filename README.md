@@ -315,5 +315,6 @@ were extracted from Berri AI's LiteLLM Admin Agent.
 ## Fork (Tomvis/liteadmin-mcp `enhanced`)
 
 - `LITELLM_ALLOW_HTTP=true` accepts a plain-HTTP gateway origin on a trusted LAN (e.g. `http://litellm:4000`). `LITELLM_MCP_PUBLIC_URL` stays HTTPS.
+- `LITELLM_ADMIN_LEGACY_GATEWAY=true` accepts a `proxy_admin` credential on a gateway whose `/user/info` has no `admin_mcp_permissions` yet (LiteLLM without BerriAI/litellm#48080), with every tool visible. A gateway that does return it is still enforced.
 - A drifted operationId or unsupported schema drops that one tool (logged as a warning) instead of failing every tool.
 - Gateway requests send a desktop Chrome User-Agent.
