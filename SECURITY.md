@@ -10,10 +10,17 @@ to start HTTP mode with a process-wide gateway key. The gateway's live proxy-adm
 role is checked for discovery, before execution and before returning results.
 The caller's own key remains the execution identity and audit actor.
 
+The gateway evaluates the authenticated credential's route permissions and returns
+them with the current identity. The connector requires this permission response,
+filters discovery, and checks the concrete resource route before and after each
+action. It does not infer an SSO session from a client header, token prefix or key
+metadata. Full Access keys keep the gateway's unrestricted-route semantics.
+
 Large sanitized results can be retained as short-lived in-memory snapshots.
 Handles are unguessable and bound to both a keyed digest of the requesting
 credential and the verified principal; another admin cannot read them. Each
-read checks the current role before and after access. Raw caller credentials
+read checks the current role and the source operation's current route permission.
+Raw caller credentials
 are not stored in the cache. Secret-returning key operations and results with
 recognizable credentials bypass it and return their complete response inline.
 Snapshot reads never re-execute the original operation. Expiration and capacity

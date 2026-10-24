@@ -102,6 +102,43 @@ def test_http_server_refuses_shared_process_credential():
         create_http_app(Gateway(Config("https://gateway.example.com", api_key="shared")))
 
 
+async def test_key_permissions_filter_discovery_and_block_direct_calls(stub):
+    stub.denied_tools = {"create_key", "add_model"}
+    async with session_for(stub) as session:
+        assert {t.name for t in (await session.list_tools()).tools} == {
+            "list_keys", "get_model", "reset_key_spend", *HELPERS,
+        }
+        assert (await session.call_tool("create_key", {"body": {"key_alias": "forbidden"}})).is_error
+        assert (await session.call_tool("describe_admin_tool", {"name": "create_key"})).is_error
+        assert data(await session.call_tool("list_keys", {})) == {"keys": []}
+    assert not stub.writes
+
+
+async def test_concrete_resource_permission_is_checked_before_write(stub):
+    stub.denied_paths = {"/key/other-key/reset_spend"}
+    async with session_for(stub) as session:
+        assert data(await session.call_tool("reset_key_spend", {"path": {"key": "my-key"}})) == {"status": "ok"}
+        assert (await session.call_tool("reset_key_spend", {"path": {"key": "other-key"}})).is_error
+    assert [request.url.path for request in stub.writes] == ["/key/my-key/reset_spend"]
+
+
+async def test_legacy_gateway_without_credential_permissions_fails_closed(stub):
+    original = stub.handle
+    def handle(request):
+        response = original(request)
+        if request.url.path == "/user/info":
+            body = response.json()
+            body.pop("admin_mcp_permissions")
+            return httpx2.Response(200, json=body)
+        return response
+    stub.handle = handle
+    async with session_for(stub) as session:
+        with pytest.raises(MCPError, match="upgrade LiteLLM"):
+            await session.list_tools()
+        assert (await session.call_tool("create_key", {"body": {"key_alias": "forbidden"}})).is_error
+    assert not stub.writes
+
+
 def test_recursive_refs_and_overridden_parameters_have_valid_schema():
     import jsonschema
     spec = {"components": {"schemas": {"Node": {"type": "object", "properties": {

@@ -107,6 +107,7 @@ class Snapshot:
     raw: bytes
     deadline: float
     expires_at: float
+    route: str | None = None
 
 
 class ResultStore:
@@ -130,12 +131,12 @@ class ResultStore:
         self._items.clear()
         self._bytes = 0
 
-    def put(self, source: str, value: Any, credential: str, principal: str) -> str | None:
+    def put(self, source: str, value: Any, credential: str, principal: str, *, route: str | None = None) -> str | None:
         self._expire()
         raw = encode(value)
         # New credentials are delivered in the original full response, never
         # retained for later reads. Also exclude recognizable keys in log data.
-        if source in SECRET_RESULTS or contains_credential(value, source=source):
+        if source in SECRET_RESULTS or contains_credential(value, source=source) or contains_credential(route):
             return None
         owner = self._owner(credential)
         if (len(raw) > MAX_RESULT_BYTES or self._bytes + len(raw) > self.max_bytes
@@ -145,7 +146,7 @@ class ResultStore:
             return None
         token = secrets.token_urlsafe(24)
         self._items[token] = Snapshot(owner, principal, source, raw,
-            time.monotonic() + self.ttl, time.time() + self.ttl)
+            time.monotonic() + self.ttl, time.time() + self.ttl, route)
         self._bytes += len(raw)
         return token
 

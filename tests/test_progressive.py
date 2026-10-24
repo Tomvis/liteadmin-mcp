@@ -227,7 +227,7 @@ async def test_warm_call_retains_pre_post_checks_without_discovery_auth(stub):
         await session.list_tools()
         stub.requests.clear()
         await session.call_tool("list_keys", {})
-        assert [r.url.path for r in stub.requests] == ["/user/info", "/key/list", "/user/info"]
+        assert [r.url.path for r in stub.requests] == ["/user/info", "/user/info", "/key/list", "/user/info"]
 
 
 async def test_identity_change_during_cold_discovery_prevents_write(stub):
@@ -239,7 +239,7 @@ async def test_identity_change_during_cold_discovery_prevents_write(stub):
         if request.url.path == "/openapi.json":
             changed = True
         elif request.url.path == "/user/info" and changed:
-            return httpx2.Response(200, json={"user_id": "new-identity", "user_info": {"user_id": "new-identity", "user_role": "proxy_admin"}})
+            return httpx2.Response(200, json={**result.json(), "user_id": "new-identity", "user_info": {"user_id": "new-identity", "user_role": "proxy_admin"}})
         return result
     stub.handle = handle
     async with session_for(stub) as session:
@@ -324,7 +324,10 @@ async def test_every_reviewed_operation_retains_mapping_advanced_inputs_and_resu
         if request.url.path == "/openapi.json":
             return httpx2.Response(200, json=spec)
         if request.url.path == "/user/info" and "litellm-changed-by" not in request.headers:
-            return httpx2.Response(200, json={"user_id": "admin", "user_info": {"user_id": "admin", "user_role": "proxy_admin"}})
+            return httpx2.Response(200, json={
+                "user_id": "admin", "user_info": {"user_id": "admin", "user_role": "proxy_admin"},
+                "admin_mcp_permissions": {"tools": [op.name for op in OPERATIONS], "action_allowed": True},
+            })
         calls.append(request)
         return httpx2.Response(200, json=result)
     async with httpx2.AsyncClient(transport=httpx2.MockTransport(handle)) as client:
@@ -357,3 +360,29 @@ async def test_every_reviewed_operation_retains_mapping_advanced_inputs_and_resu
 def test_unknown_modes_fail_instead_of_silently_changing_behavior(config):
     with pytest.raises(ValueError):
         Config("https://gateway.example.com", **config)
+
+
+async def test_cached_result_is_denied_after_source_permission_is_revoked(stub):
+    stub.keys = [{"data": "private" * 4000}]
+    async with session_for(stub) as session:
+        result = data(await session.call_tool("list_keys", {}))
+        stub.denied_tools.add("list_keys")
+        denied = await session.call_tool("read_admin_result", result["full_read"])
+        assert denied.is_error
+        assert "private" not in str(denied)
+    assert sum(r.url.path == "/key/list" for r in stub.requests) == 1
+
+
+async def test_cached_result_rechecks_its_original_resource_route(stub):
+    original = stub.handle
+    def handle(request):
+        response = original(request)
+        return httpx2.Response(200, json={"history": "private" * 4000}) if request.url.path.endswith("/reset_spend") else response
+    stub.handle = handle
+    async with session_for(stub) as session:
+        result = data(await session.call_tool("reset_key_spend", {"path": {"key": "fixture-key-id"}}))
+        stub.denied_paths.add("/key/fixture-key-id/reset_spend")
+        denied = await session.call_tool("read_admin_result", result["full_read"])
+        assert denied.is_error
+        assert "private" not in str(denied)
+    assert len(stub.writes) == 1

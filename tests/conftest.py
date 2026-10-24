@@ -8,6 +8,7 @@ from mcp.shared.memory import create_client_server_memory_streams
 import pytest
 
 from litellm_admin_mcp.config import Config
+from litellm_admin_mcp.catalog import OPERATIONS
 from litellm_admin_mcp.gateway import Gateway
 from litellm_admin_mcp.server import create_server
 
@@ -53,6 +54,8 @@ class StubGateway:
         self.revoke = False
         self.revoked = set()
         self.spec = SPEC
+        self.denied_tools = set()
+        self.denied_paths = set()
 
     def handle(self, request):
         self.requests.append(request)
@@ -61,7 +64,15 @@ class StubGateway:
             return httpx2.Response(404, json={"error": {"message": "User None not found"}})
         if request.url.path == "/user/info":
             role = "proxy_admin" if token in {"alice-admin", "bob-admin"} and token not in self.revoked else "internal_user"
-            return httpx2.Response(200, json={"user_id": token, "user_info": {"user_id": token, "user_role": role}})
+            tools = [op.name for op in OPERATIONS if op.name not in self.denied_tools]
+            return httpx2.Response(200, json={
+                "user_id": token, "user_info": {"user_id": token, "user_role": role},
+                "admin_mcp_permissions": {
+                    "tools": tools,
+                    "action_allowed": request.url.params.get("mcp_tool") in tools
+                    and request.url.params.get("mcp_path") not in self.denied_paths,
+                },
+            })
         if request.url.path == "/openapi.json":
             return httpx2.Response(200, json=self.spec)
         assert token in {"alice-admin", "bob-admin"}

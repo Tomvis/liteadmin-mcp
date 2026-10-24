@@ -1,5 +1,6 @@
 """Authenticated, non-retrying calls to a fixed LiteLLM management API."""
 import asyncio
+from dataclasses import dataclass
 import json
 import logging
 import re
@@ -37,6 +38,12 @@ class AdminError(Exception):
     def __init__(self, message: str, status: int = 400):
         super().__init__(message)
         self.status = status
+
+
+@dataclass(frozen=True)
+class Authorization:
+    principal: str
+    tools: frozenset[str]
 
 
 def valid_credential(value: str) -> str:
@@ -123,8 +130,17 @@ class Gateway:
             raise AdminError("Gateway returned an invalid JSON response." + uncertain, 502) from None
 
     async def authorize(self, credential: str) -> str:
+        return (await self._authorization(credential)).principal
+
+    async def _authorization(self, credential: str, *, tool: str | None = None,
+                             path: str | None = None) -> Authorization:
         try:
-            data = await self._request("GET", "/user/info", credential)
+            params = {"admin_mcp": "true"}
+            if tool is not None:
+                params["mcp_tool"] = tool
+            if path is not None:
+                params["mcp_path"] = path
+            data = await self._request("GET", "/user/info", credential, params=params)
         except AdminError as exc:
             if exc.status != 404:
                 raise
@@ -135,13 +151,21 @@ class Gateway:
                 or data.get("user_id") != user["user_id"] or user.get("blocked")
                 or user.get("deleted") or user.get("is_active") is False):
             raise AdminError("Only current LiteLLM proxy admins may use these tools.", 403)
-        return user["user_id"]
+        permissions = data.get("admin_mcp_permissions")
+        if (not isinstance(permissions, dict) or not isinstance(permissions.get("tools"), list)
+                or any(not isinstance(name, str) for name in permissions["tools"])):
+            raise AdminError("Gateway cannot verify this credential's admin permissions; upgrade LiteLLM.", 403)
+        if tool is not None and permissions.get("action_allowed") is not True:
+            raise AdminError("This credential is not allowed to use this admin tool.", 403)
+        return Authorization(user["user_id"], frozenset(permissions["tools"]))
 
     async def tools(self, credential: str) -> dict[str, types.Tool]:
-        await self.authorize(credential)
+        authorization = await self._authorization(credential)
         canonical = await self._load_tools(credential)
         visible = {}
         for name, tool in canonical.items():
+            if name not in authorization.tools:
+                continue
             visible[name] = (tool.model_copy(update={"input_schema": discovery_schema(tool.input_schema, name),
                 "description": tool.description + " Call describe_admin_tool for the complete argument schema before use."})
                 if self.config.schema_mode == "discovery" else tool)
@@ -195,11 +219,14 @@ class Gateway:
     async def call(self, name: str, arguments: dict, credential: str) -> Any:
         # No redundant call to tools(): execution and disclosure each have a
         # fresh authorization check. Roles/identities are never cached.
-        principal = await self.authorize(credential)
+        authorization = await self._authorization(credential)
+        principal = authorization.principal
         loaded_at = self._loaded_at
         available = await self._load_tools(credential)
         if name not in available and name not in HELPERS:
             raise AdminError("This tool is not enabled for this connector.", 403)
+        if name not in authorization.tools and name not in HELPERS:
+            raise AdminError("This credential is not allowed to use this admin tool.", 403)
         try:
             schema = HELPERS[name][0] if name in HELPERS else available[name].input_schema
             jsonschema.Draft202012Validator(schema).validate(arguments)
@@ -215,13 +242,15 @@ class Gateway:
         view = arguments.get("response", {}).get("view", self.config.response_view)
         return await self._execute(name, arguments, credential, principal, view)
 
-    async def _verify(self, credential: str, principal: str):
-        if await self.authorize(credential) != principal:
+    async def _verify(self, credential: str, principal: str, *, tool: str | None = None,
+                      path: str | None = None):
+        if (await self._authorization(credential, tool=tool, path=path)).principal != principal:
             raise AdminError("Admin identity changed during the request. Inspect gateway state before retrying.", 403)
 
-    def _view(self, name: str, value: Any, credential: str, principal: str, view: str) -> Any:
+    def _view(self, name: str, value: Any, credential: str, principal: str, view: str,
+              path: str | None = None) -> Any:
         if view == "compact" and len(encode(value)) > PAGE_BYTES:
-            token = self.results.put(name, value, credential, principal)
+            token = self.results.put(name, value, credential, principal, route=path)
             if token is not None:
                 return page(self.results.get(token, credential, principal), token)
         return value
@@ -233,7 +262,7 @@ class Gateway:
                 if target not in available:
                     raise AdminError("This tool is not enabled for this connector.", 403)
                 result = available[target].model_dump(by_alias=True, exclude_none=True, mode="json")
-                await self._verify(credential, principal)
+                await self._verify(credential, principal, tool=target)
                 return self._view("schema:" + target, result, credential, principal,
                                   arguments.get("response", {}).get("view", "full"))
             token = arguments["result_id"]
@@ -246,7 +275,7 @@ class Gateway:
                 result = select(json.loads(item.raw), arguments.get("path", ""))
             else:
                 result = page(item, token, **{k: v for k, v in arguments.items() if k not in {"result_id", "view"}})
-            await self._verify(credential, principal)
+            await self._verify(credential, principal, tool=item.source.removeprefix("schema:"), path=item.route)
             return result
         except ResultError as exc:
             raise AdminError(str(exc), 404) from None
@@ -273,8 +302,9 @@ class Gateway:
                 headers["Content-Type"] = "application/json"
             else:
                 body = {"json": arguments["body"]}
+        await self._verify(credential, principal, tool=name, path=path)
         result = await self._request(item.method, path, credential, params=query, **body,
             read_only=item.read_only, max_bytes=MAX_RESULT_BYTES,
             headers=headers)
-        await self._verify(credential, principal)
-        return self._view(name, safe_result(result, credential), credential, principal, view)
+        await self._verify(credential, principal, tool=name, path=path)
+        return self._view(name, safe_result(result, credential), credential, principal, view, path=path)

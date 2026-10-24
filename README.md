@@ -5,6 +5,14 @@ manage teams and budgets, and inspect spending.
 
 **Currently, this MCP requires a `proxy_admin` identity for all tools, including read-only tools.**
 
+The connector also checks the authenticated credential's current route permissions
+before each action and before returning results. Restricted virtual keys only see
+tools their routes permit. Full Access keys (`allowed_routes` unset or empty) keep
+their existing access, and SSO sessions retain the user's role-based access.
+The gateway must support the `admin_mcp_permissions` response from
+`/user/info?admin_mcp=true`; older gateways are rejected rather than falling back to
+an owner-role check. Upgrade the gateway before updating this connector.
+
 This is a standalone MCP server. It calls your gateway's management API using
 your own proxy-admin credential. Your MCP client supplies the agent and model.
 
